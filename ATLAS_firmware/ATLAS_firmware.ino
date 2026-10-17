@@ -2,7 +2,7 @@
 
   ATLAS - ESP32-S3 firmware v1.0.0
 
-  Two-wheel tennis ball launcher: Cytron MDD10A (PWM/DIR) + servo ball feeder.
+  Two-wheel tennis ball launcher: two BTS7960/IBT-2 drivers + servo ball feeder.
 
 
 
@@ -69,15 +69,15 @@
 
 // ============================================================================
 
-// PIN MAP FOR CLASSIC ESP32-WROOM-32 (GPIO6-11 are flash; 0/2/5/12/15 are strapping: NOT used).
-// For an ESP32-S3 use PWM1=4 DIR1=5 PWM2=6 DIR2=7.
-static const int PIN_PWM1 = 25, PIN_DIR1 = 26;    // MDD10A PWM1/DIR1 -> wheel 1 (upper)
-
-static const int PIN_PWM2 = 27, PIN_DIR2 = 33;    // MDD10A PWM2/DIR2 -> wheel 2 (lower)
-
-#define MOTOR1_DIR_FWD HIGH                       // flip to LOW if wheel 1 spins the wrong way
-
-#define MOTOR2_DIR_FWD HIGH
+// CLASSIC ESP32-WROOM-32 + TWO BTS7960/IBT-2 DRIVER BOARDS.
+// Each BTS7960 needs two PWM inputs. Do not use this pin map for an ESP32-S3.
+// Wheel 1 (upper): RPWM=GPIO25, LPWM=GPIO26
+// Wheel 2 (lower): RPWM=GPIO27, LPWM=GPIO33
+static const int PIN_M1_RPWM = 25, PIN_M1_LPWM = 26;
+static const int PIN_M2_RPWM = 27, PIN_M2_LPWM = 33;
+// true means use RPWM for the configured forward wheel direction; false uses LPWM.
+static const bool MOTOR1_FORWARD_RPWM = true;
+static const bool MOTOR2_FORWARD_RPWM = true;
 
 static const int PIN_SERVO = 18;                  // PROPOSED default; verify it is exposed on your DevKit
 
@@ -135,7 +135,7 @@ static const uint32_t CONTROL_MS = 20;
 
 static const uint32_t TELEMETRY_MS = 200;
 
-static const uint32_t PWM_FREQ = 20000;           // MDD10A accepts up to 20 kHz
+static const uint32_t PWM_FREQ = 20000;           // BTS7960 PWM; verify module cooling/current
 
 static const uint8_t  PWM_BITS = 10;
 
@@ -515,32 +515,29 @@ static void pwmWrite(int pin, int ch, uint32_t d) { ledcWrite(ch, d); }
 
 #endif
 
-// channels 6/7 chosen so ESP32Servo (allocates from 0 upward) does not collide on core 2.x
-
-static const int PWM_CH[2] = {6, 7};
-
-static const int PWM_PIN[2] = {PIN_PWM1, PIN_PWM2};
-
-static const int DIR_PIN[2] = {PIN_DIR1, PIN_DIR2};
-
-
+// Four PWM channels (6..9) avoid ESP32Servo's lower channels on Arduino-ESP32 2.x.
+static const int PWM_CH[4] = {6, 7, 8, 9};
+static const int PWM_PIN[4] = {PIN_M1_RPWM, PIN_M1_LPWM, PIN_M2_RPWM, PIN_M2_LPWM};
 
 static void setMotorPwm(int i, float frac) {
-
-  if (frac < 0) frac = 0; if (frac > 1) frac = 1;
-
-  pwmWrite(PWM_PIN[i], PWM_CH[i], (uint32_t)lroundf(frac * PWM_MAX));
-
+  if (frac < 0) frac = 0;
+  if (frac > 1) frac = 1;
+  const int rpwmIndex = i * 2;
+  const int lpwmIndex = rpwmIndex + 1;
+  const bool forwardUsesRpwm = (i == 0) ? MOTOR1_FORWARD_RPWM : MOTOR2_FORWARD_RPWM;
+  const uint32_t duty = (uint32_t)lroundf(frac * PWM_MAX);
+  // Fixed launch direction: never energize both BTS7960 PWM inputs simultaneously.
+  pwmWrite(PWM_PIN[forwardUsesRpwm ? rpwmIndex : lpwmIndex],
+           PWM_CH[forwardUsesRpwm ? rpwmIndex : lpwmIndex], duty);
+  pwmWrite(PWM_PIN[forwardUsesRpwm ? lpwmIndex : rpwmIndex],
+           PWM_CH[forwardUsesRpwm ? lpwmIndex : rpwmIndex], 0);
 }
 
 static void motorsInitSafe() {
-
-  pinMode(PIN_DIR1, OUTPUT); pinMode(PIN_DIR2, OUTPUT);
-
-  digitalWrite(PIN_DIR1, MOTOR1_DIR_FWD); digitalWrite(PIN_DIR2, MOTOR2_DIR_FWD);
-
-  for (int i = 0; i < 2; i++) { pwmBegin(PWM_PIN[i], PWM_CH[i]); pwmWrite(PWM_PIN[i], PWM_CH[i], 0); }
-
+  for (int i = 0; i < 4; i++) {
+    pwmBegin(PWM_PIN[i], PWM_CH[i]);
+    pwmWrite(PWM_PIN[i], PWM_CH[i], 0);
+  }
 }
 
 
@@ -2096,7 +2093,7 @@ void setup() {
 
   logf("BOOT", "Wi-Fi AP SSID=\"%s\" IP=%s  WS port %u", AP_SSID, WiFi.softAPIP().toString().c_str(), WS_PORT);
 
-  logf("BOOT", "motors: PWM1=GPIO%d DIR1=GPIO%d PWM2=GPIO%d DIR2=GPIO%d, PWM=%lu Hz, outputs 0", PIN_PWM1, PIN_DIR1, PIN_PWM2, PIN_DIR2, (unsigned long)PWM_FREQ);
+  logf("BOOT", "motors: M1 RPWM/LPWM=GPIO%d/%d M2 RPWM/LPWM=GPIO%d/%d, PWM=%lu Hz, outputs 0", PIN_M1_RPWM, PIN_M1_LPWM, PIN_M2_RPWM, PIN_M2_LPWM, (unsigned long)PWM_FREQ);
 
   logf("BOOT", "limits: max %.0f RPM (hard %.0f), max PWM %.0f%%, ramp +%.0f/-%.0f RPM/s", cfg.maxRpm, HARD_MAX_RPM, cfg.maxPwmPct, cfg.rampUp, cfg.rampDown);
 
